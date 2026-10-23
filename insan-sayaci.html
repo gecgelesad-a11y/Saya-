@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>İnsan Sayacı</title>
+<style>
+  :root {
+    --bg: #14181a;
+    --ink: #f2efe8;
+    --accent: #ffb400;
+    --muted: #8b9498;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    padding: env(safe-area-inset-top, 0) 0 env(safe-area-inset-bottom, 0);
+  }
+  #stage {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    background: #000;
+  }
+  video, canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  #count {
+    position: absolute;
+    left: 16px;
+    top: 16px;
+    background: rgba(20, 24, 26, 0.82);
+    padding: 10px 18px 12px;
+    border-radius: 14px;
+    line-height: 1;
+  }
+  #count b { font-size: 64px; font-weight: 700; color: var(--accent); }
+  #count span { display: block; margin-top: 4px; font-size: 14px; color: var(--muted); }
+  #msg {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 32px;
+    font-size: 18px;
+    line-height: 1.5;
+  }
+  #bar {
+    display: flex;
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--bg);
+  }
+  button {
+    flex: 1;
+    font: inherit;
+    font-size: 17px;
+    padding: 14px;
+    border-radius: 12px;
+    border: 0;
+    background: var(--accent);
+    color: #1b1400;
+    font-weight: 600;
+  }
+  button.alt { background: #2a3134; color: var(--ink); }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  button:disabled { opacity: 0.5; }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="count" hidden><b id="n">0</b><span>kişi</span></div>
+    <div id="msg">Kamerayı açmak için aşağıdaki Başlat düğmesine dokunun.</div>
+  </div>
+  <div id="bar">
+    <button id="start">Başlat</button>
+    <button id="flip" class="alt" disabled>Kamerayı çevir</button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("overlay");
+    const ctx = canvas.getContext("2d");
+    const msg = document.getElementById("msg");
+    const countBox = document.getElementById("count");
+    const nEl = document.getElementById("n");
+    const startBtn = document.getElementById("start");
+    const flipBtn = document.getElementById("flip");
+
+    let model = null;
+    let stream = null;
+    let facing = "environment";
+    let running = false;
+
+    async function openCamera() {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+
+    async function start() {
+      startBtn.disabled = true;
+      try {
+        msg.textContent = "Kamera açılıyor...";
+        await openCamera();
+        if (!model) {
+          msg.textContent = "Model yükleniyor, birkaç saniye sürebilir...";
+          model = await cocoSsd.load({ base: "lite_mobilenet_v2" });
+        }
+        msg.hidden = true;
+        countBox.hidden = false;
+        flipBtn.disabled = false;
+        startBtn.textContent = "Durdur";
+        startBtn.disabled = false;
+        running = true;
+        loop();
+      } catch (err) {
+        msg.hidden = false;
+        msg.textContent = "Başlatılamadı: kamera izni verildiğinden ve sayfanın https:// ile açıldığından emin olun.";
+        startBtn.disabled = false;
+        console.error(err);
+      }
+    }
+
+    function stop() {
+      running = false;
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      countBox.hidden = true;
+      msg.hidden = false;
+      msg.textContent = "Durduruldu. Yeniden başlatmak için Başlat düğmesine dokunun.";
+      flipBtn.disabled = true;
+      startBtn.textContent = "Başlat";
+    }
+
+    async function loop() {
+      if (!running) return;
+      const preds = await model.detect(video);
+      const people = preds.filter(p => p.class === "person" && p.score >= 0.5);
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = Math.max(3, canvas.width / 320);
+      ctx.strokeStyle = "#ffb400";
+      people.forEach(p => {
+        const [x, y, w, h] = p.bbox;
+        ctx.strokeRect(x, y, w, h);
+      });
+      nEl.textContent = people.length;
+
+      setTimeout(() => requestAnimationFrame(loop), 100);
+    }
+
+    startBtn.addEventListener("click", () => (running ? stop() : start()));
+    flipBtn.addEventListener("click", async () => {
+      facing = facing === "environment" ? "user" : "environment";
+      try { await openCamera(); } catch (e) { console.error(e); }
+    });
+  </script>
+</body>
+</html>
